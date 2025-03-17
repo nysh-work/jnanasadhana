@@ -21,6 +21,7 @@ import time  # Import for timer functionality
 import random  # Add random module for generating focus tips
 import shutil
 import tempfile
+from Crypto.Cipher import AES  # Import PyCryptodome for PDF decryption
 
 # Load environment variables
 load_dotenv()
@@ -238,6 +239,93 @@ def extract_text_from_pdf_robust(pdf_file):
         return result
     else:
         return "Could not extract sufficient text from this PDF. It may be encrypted, scanned, or contain only images."
+
+def extract_text_from_pdf_with_crypto(pdf_file, password=None):
+    """
+    Extract text from a PDF file with PyCryptodome support for encrypted PDFs.
+    
+    Args:
+        pdf_file: The uploaded PDF file object
+        password: Optional password to try unlocking the PDF
+        
+    Returns:
+        str: Extracted text from the PDF or error message
+    """
+    # Create progress indicators
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    try:
+        # Reset file pointer
+        pdf_file.seek(0)
+        
+        # Create BytesIO object
+        pdf_bytes = io.BytesIO(pdf_file.getvalue())
+        
+        # Create PDF reader
+        reader = PyPDF2.PdfReader(pdf_bytes)
+        
+        # Check if PDF is encrypted
+        if reader.is_encrypted:
+            if not password:
+                # Try with empty password
+                try:
+                    reader.decrypt('')
+                except:
+                    # If decryption fails, return error
+                    progress_bar.empty()
+                    status_text.empty()
+                    return "The PDF file is encrypted and requires a password. Please upload an unencrypted version."
+            else:
+                # Try with provided password
+                try:
+                    reader.decrypt(password)
+                except:
+                    progress_bar.empty()
+                    status_text.empty()
+                    return "The provided password could not decrypt the PDF. Please try with the correct password."
+        
+        # Extract text from each page
+        text_parts = []
+        total_pages = len(reader.pages)
+        
+        for i, page in enumerate(reader.pages):
+            try:
+                page_text = page.extract_text()
+                if page_text and page_text.strip():
+                    text_parts.append(page_text)
+            except Exception as e:
+                # Skip problematic pages
+                print(f"Error extracting page {i+1}: {str(e)}")
+                continue
+            
+            # Update progress
+            progress = (i + 1) / total_pages
+            progress_bar.progress(progress)
+            status_text.text(f"Extracting page {i+1}/{total_pages}")
+        
+        # Clear progress indicators
+        progress_bar.empty()
+        status_text.empty()
+        
+        # Check if we got any text
+        if text_parts:
+            combined_text = "\n\n".join(text_parts)
+            return combined_text
+        else:
+            return "Could not extract text from the PDF. The document might be scanned or contain only images."
+    
+    except Exception as e:
+        # Clear progress indicators
+        progress_bar.empty()
+        status_text.empty()
+        
+        # Check for common errors
+        error_msg = str(e).lower()
+        if "not decrypt" in error_msg or "password" in error_msg or "encrypt" in error_msg:
+            return "The PDF file is encrypted and cannot be processed. Please upload an unencrypted PDF."
+        else:
+            return f"Error processing PDF: {str(e)}. Please try a different file."
 # Extract model questions from PDF
 def extract_model_questions(pdf_file):
     """Extract model questions from a PDF file to use as examples for AI."""
@@ -2131,19 +2219,48 @@ def main():
 
     # File upload section
     st.markdown('<div class="section-header">Upload Your Documents</div>', unsafe_allow_html=True)
+    
+    # File uploader
     uploaded_files = st.file_uploader("Upload PDF files:", 
                                     type=["pdf"],
                                     accept_multiple_files=True,
                                     help="Upload PDF files that are not encrypted or password-protected. Text-based PDFs work best.")
-
+    
+    # PDF password input (hidden by default)
+    pdf_password = st.text_input(
+        "PDF Password (optional)",
+        type="password",
+        help="Enter password only if your PDF is encrypted and you have the password",
+        key="pdf_password"
+    )
+    
+    # Advanced options
+    with st.expander("Advanced PDF Options"):
+        extraction_method = st.radio(
+            "PDF Extraction Method",
+            options=["Auto (Recommended)", "Standard PyPDF2", "Robust Multi-method", "With Decryption"],
+            index=0,
+            help="Select which extraction method to use for PDFs"
+        )
+    
     # Handle new file uploads
     if uploaded_files:
         for file in uploaded_files:
             file_name = file.name
             if file_name not in [f for f in st.session_state.uploaded_files]:
                 with st.spinner(f"Processing {file_name}..."):
-                    # Use the robust extraction method instead of the original one
-                    content = extract_text_from_pdf_robust(file)
+                    # Select extraction method based on user choice
+                    if extraction_method == "Standard PyPDF2":
+                        content = extract_text_from_pdf(file)
+                    elif extraction_method == "Robust Multi-method":
+                        content = extract_text_from_pdf_robust(file)
+                    elif extraction_method == "With Decryption":
+                        content = extract_text_from_pdf_with_crypto(file, pdf_password if pdf_password else None)
+                    else:
+                        # Auto method - try with crypto first, then fallback to robust
+                        content = extract_text_from_pdf_with_crypto(file, pdf_password if pdf_password else None)
+                        if content and (content.startswith("The PDF file is encrypted") or content.startswith("Could not extract")):
+                            content = extract_text_from_pdf_robust(file)
                     
                     # Check if content is an error message
                     if content and "encrypted" in content.lower():
