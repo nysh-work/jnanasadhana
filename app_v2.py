@@ -2035,7 +2035,21 @@ def main():
                     content = extract_text_from_pdf(file)
                     
                     # Check if content is an error message
-                    if content and (content.startswith("Error") or content.startswith("Failed") or content.startswith("Could not")):
+                    if content and content.startswith("The PDF file is encrypted"):
+                        st.error(f"""
+                        📔 **Encrypted PDF Detected:** {file_name}
+                        
+                        This PDF is password-protected or encrypted and cannot be processed.
+                        
+                        **To fix this issue:**
+                        1. Open the PDF in a PDF reader (like Adobe Acrobat)
+                        2. Enter the password if prompted
+                        3. Save a new copy without password protection
+                           - In Adobe Acrobat: File → Save As → Reduce Size PDF
+                           - In other PDF readers: Look for "Save without encryption" or similar option
+                        4. Upload the new unencrypted version
+                        """)
+                    elif content and (content.startswith("Error") or content.startswith("Failed") or content.startswith("Could not")):
                         st.error(f"Error processing {file_name}: {content}")
                         # Don't add the file to session state if extraction failed
                     else:
