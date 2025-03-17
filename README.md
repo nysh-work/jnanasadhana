@@ -124,6 +124,36 @@ All data is stored locally:
 
 No data is sent to external servers except for the content sent to the Gemini API for processing.
 
+## Troubleshooting
+
+### PDF Extraction Issues
+
+If you encounter problems with PDF text extraction:
+
+1. **PDF Format**: Ensure your PDF is not encrypted or password-protected
+2. **Scanned Documents**: The app cannot extract text from scanned PDFs unless they have been OCR-processed
+3. **Image-based PDFs**: PDFs containing only images won't work with the text extraction
+4. **Large Files**: Try splitting very large PDFs into smaller chunks
+5. **Alternative Formats**: If possible, try using a text-based format instead of PDF
+
+### API Key Issues
+
+If you encounter problems with the Gemini API:
+
+1. **Check API Key**: Verify your API key is correctly entered in the `.env` file
+2. **API Quotas**: Check if you've exceeded your Gemini API quota
+3. **Network Issues**: Ensure your device has internet access
+4. **API Status**: Check the [Google AI Studio status page](https://status.cloud.google.com/) for any service disruptions
+
+### Deployment Issues
+
+When deploying to Streamlit Cloud:
+
+1. **Environment Variables**: Make sure to set the `GEMINI_API_KEY` in the Streamlit Cloud secrets
+2. **Dependencies**: Verify all dependencies are correctly listed in `requirements.txt`
+3. **File Permissions**: Ensure the app has write permissions for data directories
+4. **Memory Limits**: Be aware of Streamlit Cloud's memory limitations for free tier
+
 ## Testing & Feedback
 
 During the testing phase, you can provide feedback directly through the application:

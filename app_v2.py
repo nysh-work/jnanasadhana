@@ -35,61 +35,99 @@ def setup_google_api():
 # Extract text from PDF
 def extract_text_from_pdf(pdf_file):
     """
-    Extract text from a PDF file with improved error handling.
+    Extract text from a PDF file with improved error handling and fallback methods.
     
     Args:
         pdf_file: The uploaded PDF file object
         
     Returns:
-        str: Extracted text from the PDF or empty string if extraction fails
+        str: Extracted text from the PDF or error message
     """
     try:
-        # Create a temporary file to save the uploaded file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-            temp_file.write(pdf_file.getvalue())
-            temp_file_path = temp_file.name
+        # Create a BytesIO object to handle the file buffer
+        pdf_bytes = io.BytesIO(pdf_file.getvalue())
         
-        # Open the PDF file
-        text = ""
-        with open(temp_file_path, 'rb') as file:
-            try:
-                # Create PDF reader object
-                pdf_reader = PyPDF2.PdfReader(file)
-                
-                # Check if PDF is encrypted
-                if pdf_reader.is_encrypted:
-                    return ""
-                
-                # Extract text from each page
-                for page_num in range(len(pdf_reader.pages)):
-                    try:
-                        page = pdf_reader.pages[page_num]
-                        text += page.extract_text() + "\n\n"
-                    except Exception as e:
-                        st.warning(f"Error extracting text from page {page_num+1}: {str(e)}")
-                        continue
-                
-                # Clean up the text
-                text = text.strip()
-                
-                # Check if text extraction was successful
-                if not text:
-                    st.error(f"No text could be extracted from {pdf_file.name}. The PDF might be scanned or contain only images.")
-                    return ""
-                
-                return text
-            except Exception as e:
-                st.error(f"Error reading PDF: {str(e)}")
-                return ""
-    except Exception as e:
-        st.error(f"Error processing file {pdf_file.name}: {str(e)}")
-        return ""
-    finally:
-        # Clean up the temporary file
+        # First attempt: Use PyPDF2
         try:
-            os.unlink(temp_file_path)
-        except:
-            pass
+            reader = PyPDF2.PdfReader(pdf_bytes)
+            
+            # Check if PDF is encrypted
+            if reader.is_encrypted:
+                return "The PDF file is encrypted and cannot be processed. Please upload an unencrypted PDF."
+            
+            # Add progress bar for large documents
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            text_parts = []
+            total_pages = len(reader.pages)
+            
+            for i, page in enumerate(reader.pages):
+                try:
+                    page_text = page.extract_text()
+                    if page_text and page_text.strip():
+                        text_parts.append(page_text)
+                except Exception as e:
+                    st.warning(f"Warning: Could not extract text from page {i+1}. Skipping this page.")
+                    continue
+                
+                # Update progress
+                progress = (i + 1) / total_pages
+                progress_bar.progress(progress)
+                status_text.text(f"Extracting page {i+1}/{total_pages}")
+            
+            # Clear progress indicators
+            progress_bar.empty()
+            status_text.empty()
+            
+            # Check if we got any text
+            if text_parts:
+                text = "\n\n".join(text_parts)
+                return text
+            else:
+                # If PyPDF2 couldn't extract any text, the PDF might be scanned or contain only images
+                return "Could not extract text from the PDF. The document might be scanned or contain only images."
+                
+        except Exception as e:
+            st.warning(f"Primary extraction method failed: {str(e)}. Trying alternative method...")
+            
+            # Reset the BytesIO object
+            pdf_bytes.seek(0)
+            
+            # Second attempt: Alternative approach using a different method
+            try:
+                # Create a temporary file to save the uploaded file
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+                    temp_file.write(pdf_file.getvalue())
+                    temp_file_path = temp_file.name
+                
+                # Try to extract text using a different approach
+                text = ""
+                with open(temp_file_path, 'rb') as file:
+                    reader = PyPDF2.PdfReader(file)
+                    for page_num in range(len(reader.pages)):
+                        try:
+                            page = reader.pages[page_num]
+                            text += page.extract_text() + "\n\n"
+                        except:
+                            continue
+                
+                # Clean up the temporary file
+                try:
+                    os.unlink(temp_file_path)
+                except:
+                    pass
+                
+                if text.strip():
+                    return text
+                else:
+                    return "Could not extract text from the PDF. The document might be scanned or contain only images."
+                    
+            except Exception as inner_e:
+                return f"Failed to extract text from the PDF: {str(inner_e)}. Please try a different PDF file."
+    
+    except Exception as outer_e:
+        return f"Error processing the PDF file: {str(outer_e)}. Please check if the file is valid and try again."
 # Extract model questions from PDF
 def extract_model_questions(pdf_file):
     """Extract model questions from a PDF file to use as examples for AI."""
@@ -1995,12 +2033,15 @@ def main():
             if file_name not in [f for f in st.session_state.uploaded_files]:
                 with st.spinner(f"Processing {file_name}..."):
                     content = extract_text_from_pdf(file)
-                    if content:
+                    
+                    # Check if content is an error message
+                    if content and (content.startswith("Error") or content.startswith("Failed") or content.startswith("Could not")):
+                        st.error(f"Error processing {file_name}: {content}")
+                        # Don't add the file to session state if extraction failed
+                    else:
                         st.session_state.file_contents[file_name] = content
                         st.session_state.uploaded_files.append(file_name)
                         st.success(f"Successfully processed {file_name}")
-                    else:
-                        st.error(f"Failed to extract text from {file_name}")
         
         # Display uploaded files
         if st.session_state.uploaded_files:
