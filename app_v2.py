@@ -62,6 +62,18 @@ def extract_text_from_pdf(pdf_file):
             text_parts = []
             total_pages = len(reader.pages)
             
+            # Try to extract text from first page to catch encryption/permissions issues
+            try:
+                if total_pages > 0:
+                    first_page = reader.pages[0]
+                    first_page_text = first_page.extract_text()
+                    if first_page_text is None:
+                        # Some encrypted PDFs don't set is_encrypted but still fail on extraction
+                        return "The PDF file appears to be encrypted or has restricted permissions. Please upload an unencrypted PDF."
+            except Exception as page_e:
+                if "decrypt" in str(page_e).lower() or "password" in str(page_e).lower() or "encrypt" in str(page_e).lower():
+                    return "The PDF file is encrypted and cannot be processed. Please upload an unencrypted PDF."
+            
             for i, page in enumerate(reader.pages):
                 try:
                     page_text = page.extract_text()
@@ -1527,9 +1539,9 @@ def main():
     # Set page config
     st.set_page_config(
         page_title="Jñānasādhana",
-        page_icon="📚",
+        page_icon="Logo Updated.png",
         layout="wide",
-        initial_sidebar_state="collapsed"
+        initial_sidebar_state="collapsed"  # Sidebar starts collapsed
     )
     
     # Initialize session state variables
@@ -2024,7 +2036,7 @@ def main():
     uploaded_files = st.file_uploader("Upload PDF files:", 
                                     type=["pdf"],
                                     accept_multiple_files=True,
-                                    help="You can upload multiple PDF files to study related concepts together")
+                                    help="Upload PDF files that are not encrypted or password-protected. Text-based PDFs work best.")
 
     # Handle new file uploads
     if uploaded_files:
@@ -2056,6 +2068,21 @@ def main():
                         st.session_state.file_contents[file_name] = content
                         st.session_state.uploaded_files.append(file_name)
                         st.success(f"Successfully processed {file_name}")
+                        
+                        # Check if content is very short (likely extraction problem)
+                        if len(content.strip()) < 100:
+                            st.warning(f"""
+                            ⚠️ **Limited Content Detected**
+                            
+                            Only {len(content.strip())} characters were extracted from {file_name}, which is unusually small.
+                            
+                            This may indicate:
+                            - The PDF contains mostly images or scanned content
+                            - The PDF has restricted permissions
+                            - The text extraction was incomplete
+                            
+                            Consider using a different PDF with more extractable text.
+                            """)
         
         # Display uploaded files
         if st.session_state.uploaded_files:
