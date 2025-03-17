@@ -3266,106 +3266,115 @@ def main():
                         if mind_palace_data:
                             st.session_state.mind_palace = mind_palace_data
                             st.success("Mind Palace created successfully!")
-                            
-                            # Display the Mind Palace structure
-                            st.markdown(f"### {mind_palace_data['palace_name']}")
-                            
-                            # Create tabs for different views
-                            tab1, tab2 = st.tabs(["Room View", "Memory Anchors"])
-                            
-                            with tab1:
-                                # Room navigation
-                                room_names = [room["name"] for room in mind_palace_data["rooms"]]
-                                selected_room = st.selectbox("Select a Room", room_names)
+                
+                # Display the Mind Palace if it exists
+                if "mind_palace" in st.session_state and st.session_state.mind_palace:
+                    # Display the Mind Palace structure
+                    st.markdown(f"### {st.session_state.mind_palace['palace_name']}")
+                    
+                    # Create tabs for different views
+                    tab1, tab2 = st.tabs(["Room View", "Memory Anchors"])
+                    
+                    with tab1:
+                        # Room navigation
+                        room_names = [room["name"] for room in st.session_state.mind_palace["rooms"]]
+                        selected_room = st.selectbox("Select a Room", room_names)
+                        
+                        # Display selected room
+                        for room in st.session_state.mind_palace["rooms"]:
+                            if room["name"] == selected_room:
+                                st.markdown(f"**Description:** {room['description']}")
                                 
-                                # Display selected room
-                                for room in mind_palace_data["rooms"]:
-                                    if room["name"] == selected_room:
-                                        st.markdown(f"#### {room['name']}")
-                                        st.markdown(room["description"])
-                                        
-                                        # Display memory anchors in the room
-                                        st.markdown("##### Memory Anchors in this Room:")
-                                        for anchor in room["memory_anchors"]:
-                                            with st.expander(f"📍 {anchor['location']}"):
-                                                st.markdown(f"**Concept:** {anchor['concept']}")
-                                                st.markdown(f"**Details:** {anchor['details']}")
-                                                st.markdown(f"*{anchor['description']}*")
-                            
-                            with tab2:
-                                # Display all memory anchors in a table format
-                                all_anchors = []
-                                for room in mind_palace_data["rooms"]:
-                                    for anchor in room["memory_anchors"]:
-                                        all_anchors.append({
-                                            "Room": room["name"],
-                                            "Location": anchor["location"],
-                                            "Concept": anchor["concept"],
-                                            "Details": anchor["details"]
-                                        })
+                                # Create columns for memory anchors
+                                anchor_cols = st.columns(2)
                                 
-                                st.dataframe(all_anchors)
-                            
-                            # Practice Mode
-                            st.markdown("### Practice Mode")
-                            if st.button("Start Practice"):
-                                st.session_state.practice_mode = True
+                                for i, anchor in enumerate(room["memory_anchors"]):
+                                    with anchor_cols[i % 2]:
+                                        with st.expander(f"📍 {anchor['location']}"):
+                                            st.markdown(f"**Concept:** {anchor['concept']}")
+                                            st.markdown(f"**Details:** {anchor['details']}")
+                                            st.markdown(f"*{anchor['description']}*")
+                    
+                    with tab2:
+                        # Flatten the memory anchors for practice
+                        all_anchors = []
+                        for room in st.session_state.mind_palace["rooms"]:
+                            for anchor in room["memory_anchors"]:
+                                anchor_with_room = anchor.copy()
+                                anchor_with_room["room"] = room["name"]
+                                all_anchors.append(anchor_with_room)
+                        
+                        # Memory practice mode
+                        st.markdown("### Memory Practice Mode")
+                        
+                        # Make sure we have anchors
+                        if all_anchors:
+                            # Initialize practice state if needed
+                            if "current_anchor" not in st.session_state or not st.session_state.current_anchor:
                                 st.session_state.current_anchor = random.choice(all_anchors)
-                                
-                            if st.session_state.get("practice_mode", False):
-                                st.markdown("#### Test Your Memory")
-                                st.markdown(f"**Location:** {st.session_state.current_anchor['Location']}")
-                                st.markdown(f"**Room:** {st.session_state.current_anchor['Room']}")
-                                
-                                user_concept = st.text_input("What concept is associated with this location?")
-                                if st.button("Check Answer"):
-                                    if user_concept.lower() in st.session_state.current_anchor["Concept"].lower():
-                                        st.success("Correct! Well done!")
-                                    else:
-                                        st.error(f"Incorrect. The concept was: {st.session_state.current_anchor['Concept']}")
-                                    
-                                    if st.button("Next Location"):
-                                        st.session_state.current_anchor = random.choice(all_anchors)
-                                        st.experimental_rerun()
                             
-                            # Add download options for Mind Palace
-                            st.markdown("### Download Mind Palace")
-                            palace_download_format = st.selectbox(
-                                "Select Format:",
-                                options=["JSON", "Markdown"],
-                                key="mind_palace_download_format"
-                            )
+                            # Display practice interface
+                            st.markdown(f"**Location:** {st.session_state.current_anchor['room']} - {st.session_state.current_anchor['location']}")
                             
-                            if palace_download_format == "JSON":
-                                palace_json = json.dumps(mind_palace_data, indent=4)
-                                st.download_button(
-                                    label="Download Mind Palace (JSON)",
-                                    data=palace_json,
-                                    file_name="mind_palace.json",
-                                    mime="application/json"
-                                )
-                            elif palace_download_format == "Markdown":
-                                palace_md = f"# {mind_palace_data['palace_name']}\n\n"
+                            # Ask user to recall the concept
+                            user_recall = st.text_input("What concept is associated with this location?")
+                            
+                            if user_recall:
+                                if user_recall.lower() in st.session_state.current_anchor['concept'].lower():
+                                    st.success(f"Correct! The concept is: {st.session_state.current_anchor['concept']}")
+                                    st.markdown(f"**Details:** {st.session_state.current_anchor['details']}")
+                                else:
+                                    st.error(f"Incorrect. The concept was: {st.session_state.current_anchor['concept']}")
                                 
-                                for room in mind_palace_data["rooms"]:
-                                    palace_md += f"## {room['name']}\n"
-                                    palace_md += f"{room['description']}\n\n"
-                                    
-                                    palace_md += "### Memory Anchors\n"
-                                    for anchor in room["memory_anchors"]:
-                                        palace_md += f"#### 📍 {anchor['location']}\n"
-                                        palace_md += f"**Concept:** {anchor['concept']}\n"
-                                        palace_md += f"**Details:** {anchor['details']}\n"
-                                        palace_md += f"*{anchor['description']}*\n\n"
-                                
-                                st.download_button(
-                                    label="Download Mind Palace (Markdown)",
-                                    data=palace_md,
-                                    file_name="mind_palace.md",
-                                    mime="text/markdown"
-                                )
+                                if st.button("Next Location"):
+                                    st.session_state.current_anchor = random.choice(all_anchors)
+                                    st.experimental_rerun()
                         else:
-                            st.error("Failed to create Mind Palace.")
+                            st.warning("No memory anchors available. Please generate a Mind Palace with memory anchors.")
+                    
+                    # Add download options for Mind Palace
+                    st.markdown("### Download Mind Palace")
+                    
+                    # Check if mind palace exists in session state
+                    if "mind_palace" not in st.session_state or not st.session_state.mind_palace:
+                        st.warning("No Mind Palace data available. Please generate a Mind Palace first.")
+                    else:
+                        palace_download_format = st.selectbox(
+                            "Select Format:",
+                            options=["JSON", "Markdown"],
+                            key="mind_palace_download_format"
+                        )
+                        
+                        if palace_download_format == "JSON":
+                            palace_json = json.dumps(st.session_state.mind_palace, indent=4)
+                            st.download_button(
+                                label="Download Mind Palace (JSON)",
+                                data=palace_json,
+                                file_name="mind_palace.json",
+                                mime="application/json"
+                            )
+                        elif palace_download_format == "Markdown":
+                            palace_md = f"# {st.session_state.mind_palace['palace_name']}\n\n"
+                            
+                            for room in st.session_state.mind_palace["rooms"]:
+                                palace_md += f"## {room['name']}\n"
+                                palace_md += f"{room['description']}\n\n"
+                                
+                                palace_md += "### Memory Anchors\n"
+                                for anchor in room["memory_anchors"]:
+                                    palace_md += f"#### 📍 {anchor['location']}\n"
+                                    palace_md += f"**Concept:** {anchor['concept']}\n"
+                                    palace_md += f"**Details:** {anchor['details']}\n"
+                                    palace_md += f"*{anchor['description']}*\n\n"
+                            
+                            st.download_button(
+                                label="Download Mind Palace (Markdown)",
+                                data=palace_md,
+                                file_name="mind_palace.md",
+                                mime="text/markdown"
+                            )
+                else:
+                    st.error("Failed to create Mind Palace.")
 
         with tab3:
             st.markdown('<div class="section-header">Productivity and Focus</div>', unsafe_allow_html=True)
