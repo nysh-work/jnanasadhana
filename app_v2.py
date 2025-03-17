@@ -1219,7 +1219,88 @@ def generate_interactive_quiz(summary, num_questions=5, difficulty="medium"):
     except Exception as e:
         st.error(f"Error generating interactive quiz: {str(e)}")
         return None
-# Check quiz answer
+
+def evaluate_quiz_answer_with_gemini(question_data, user_answer):
+    """
+    Use Gemini API to evaluate quiz answers, particularly useful for short answers.
+    
+    Args:
+        question_data: Dictionary containing question information
+        user_answer: The user's submitted answer
+        
+    Returns:
+        Dictionary with evaluation results
+    """
+    # Initialize Gemini API
+    model = setup_google_api()
+    if not model:
+        # Fall back to basic evaluation if API is not available
+        return check_quiz_answer(question_data, user_answer)
+    
+    try:
+        # For multiple choice and true/false, we can still use basic checking
+        if question_data["question_type"] in ["multiple_choice", "true_false"]:
+            return check_quiz_answer(question_data, user_answer)
+        
+        # For short answers, use Gemini for more intelligent evaluation
+        if question_data["question_type"] == "short_answer":
+            # Construct prompt for Gemini
+            prompt = f"""
+            You are an expert educational assessment system. Evaluate this student answer for accuracy.
+            
+            Question: {question_data["question"]}
+            
+            Reference correct answer: {question_data["correct_answer"]}
+            Key concepts that should be included: {", ".join(question_data["keywords"])}
+            
+            Student's answer: {user_answer}
+            
+            Evaluate the answer and respond in this JSON format only:
+            {{
+                "correct": true or false,
+                "score": a number between 0 and 1 representing how correct the answer is,
+                "explanation": "Your explanation of why the answer is correct or incorrect",
+                "missing_concepts": ["list of concepts the student missed"],
+                "feedback": "Constructive feedback for the student"
+            }}
+            
+            Focus on conceptual understanding rather than exact wording. The answer should be considered correct if it demonstrates understanding of the key concepts, even if it doesn't use the exact same words.
+            """
+            
+            # Get evaluation from Gemini
+            response = model.generate_content(prompt)
+            
+            # Parse the response
+            try:
+                json_text = response.text
+                if "```json" in json_text:
+                    json_text = json_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in json_text:
+                    json_text = json_text.split("```")[1].split("```")[0].strip()
+                
+                evaluation = json.loads(json_text)
+                
+                # Return the evaluation with standard fields
+                return {
+                    "correct": evaluation.get("correct", False),
+                    "explanation": evaluation.get("explanation", ""),
+                    "feedback": evaluation.get("feedback", ""),
+                    "score": evaluation.get("score", 0),
+                    "missing_concepts": evaluation.get("missing_concepts", []),
+                    "ai_evaluated": True
+                }
+            except (json.JSONDecodeError, AttributeError) as e:
+                # Fall back to basic evaluation if parsing fails
+                st.warning(f"Error parsing AI evaluation: {str(e)}. Using basic evaluation instead.")
+                return check_quiz_answer(question_data, user_answer)
+        
+        # For unrecognized question types
+        return check_quiz_answer(question_data, user_answer)
+    
+    except Exception as e:
+        st.warning(f"Error using AI for evaluation: {str(e)}. Using basic evaluation instead.")
+        return check_quiz_answer(question_data, user_answer)
+
 def check_quiz_answer(question_data, user_answer):
     """Check if the user's answer is correct based on question type."""
     try:
@@ -2655,6 +2736,31 @@ def main():
                                 st.session_state.quiz_completed = False
                                 st.rerun()
                 
+                # Advanced quiz options
+                with st.expander("Advanced Quiz Options"):
+                    use_ai_eval = st.checkbox(
+                        "Use Gemini AI for answer evaluation", 
+                        value=True,
+                        help="Enables more intelligent evaluation of short answer questions using Gemini AI"
+                    )
+                    
+                    # Store the setting in session state
+                    if "use_ai_evaluation" not in st.session_state or st.session_state.use_ai_evaluation != use_ai_eval:
+                        st.session_state.use_ai_evaluation = use_ai_eval
+                    
+                    st.markdown("""
+                    **With AI Evaluation:**
+                    - More intelligent understanding of your answers
+                    - Partial credit for partially correct answers
+                    - Personalized feedback and explanations
+                    - Identifies specific concepts you missed
+                    
+                    **Without AI Evaluation:**
+                    - Faster evaluation (no API call)
+                    - Works offline or when API is unavailable
+                    - Uses simple keyword matching for short answers
+                    """)
+                
                 # Display quiz if available
                 if "quiz_data" in st.session_state and st.session_state.quiz_data:
                     # Initialize quiz state if needed
@@ -2708,8 +2814,13 @@ def main():
                         # Submit button (only show if not answered yet)
                         if not question_answered:
                             if st.button("Submit Answer", key=f"submit_q{current_q}"):
-                                # Check answer
-                                result = check_quiz_answer(question_data, user_answer)
+                                # Check if AI evaluation is enabled
+                                if "use_ai_evaluation" in st.session_state and st.session_state.use_ai_evaluation:
+                                    # Use AI evaluation
+                                    result = evaluate_quiz_answer_with_gemini(question_data, user_answer)
+                                else:
+                                    # Use basic evaluation
+                                    result = check_quiz_answer(question_data, user_answer)
                                 
                                 # Store answer and result
                                 if len(st.session_state.quiz_answers) <= current_q:
@@ -2717,14 +2828,24 @@ def main():
                                         "question": question_data["question"],
                                         "user_answer": user_answer,
                                         "correct": result["correct"],
-                                        "explanation": result["explanation"]
+                                        "explanation": result["explanation"],
+                                        # Add AI evaluation data if available
+                                        "ai_evaluated": result.get("ai_evaluated", False),
+                                        "feedback": result.get("feedback", ""),
+                                        "score": result.get("score", 1.0 if result["correct"] else 0.0),
+                                        "missing_concepts": result.get("missing_concepts", [])
                                     })
                                 else:
                                     st.session_state.quiz_answers[current_q] = {
                                         "question": question_data["question"],
                                         "user_answer": user_answer,
                                         "correct": result["correct"],
-                                        "explanation": result["explanation"]
+                                        "explanation": result["explanation"],
+                                        # Add AI evaluation data if available
+                                        "ai_evaluated": result.get("ai_evaluated", False),
+                                        "feedback": result.get("feedback", ""),
+                                        "score": result.get("score", 1.0 if result["correct"] else 0.0),
+                                        "missing_concepts": result.get("missing_concepts", [])
                                     }
                                 
                                 # Mark question as answered
@@ -2739,6 +2860,20 @@ def main():
                             else:
                                 st.error("Incorrect. " + result["explanation"])
                             
+                            # Display additional feedback if AI evaluated
+                            if "ai_evaluated" in result and result["ai_evaluated"]:
+                                if "feedback" in result and result["feedback"]:
+                                    st.info(f"**Feedback:** {result['feedback']}")
+                                
+                                if "score" in result and "missing_concepts" in result:
+                                    score_percent = int(result["score"] * 100)
+                                    st.write(f"**Score:** {score_percent}%")
+                                    
+                                    if result["missing_concepts"]:
+                                        st.write("**Concepts to review:**")
+                                        for concept in result["missing_concepts"]:
+                                            st.write(f"- {concept}")
+                        
                         # Navigation buttons
                         nav_col1, nav_col2 = st.columns([1, 1])
                             
@@ -2787,6 +2922,21 @@ def main():
                                 else:
                                     st.error("Incorrect")
                                 st.write(f"**Explanation:** {answer_data['explanation']}")
+                                
+                                # Display additional AI feedback when available
+                                if "ai_evaluated" in answer_data and answer_data["ai_evaluated"]:
+                                    if "feedback" in answer_data and answer_data["feedback"]:
+                                        st.info(f"**Feedback:** {answer_data['feedback']}")
+                                    
+                                    if "score" in answer_data:
+                                        score_percent = int(answer_data["score"] * 100)
+                                        st.progress(answer_data["score"])
+                                        st.write(f"**Score:** {score_percent}%")
+                                    
+                                    if "missing_concepts" in answer_data and answer_data["missing_concepts"]:
+                                        st.write("**Concepts to review:**")
+                                        for concept in answer_data["missing_concepts"]:
+                                            st.write(f"- {concept}")
                         
                         # Reset button
                         if st.button("Take Another Quiz"):
