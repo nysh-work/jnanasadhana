@@ -1231,13 +1231,25 @@ def evaluate_quiz_answer_with_gemini(question_data, user_answer):
     Returns:
         Dictionary with evaluation results
     """
-    # Initialize Gemini API
-    model = setup_google_api()
-    if not model:
-        # Fall back to basic evaluation if API is not available
-        return check_quiz_answer(question_data, user_answer)
+    # Check for empty answers to avoid unnecessary API calls
+    if not user_answer:
+        return {
+            "correct": False,
+            "explanation": "No answer provided",
+            "feedback": "Please provide an answer before submitting",
+            "score": 0,
+            "missing_concepts": ["All concepts (no answer provided)"],
+            "ai_evaluated": True
+        }
     
+    # Initialize Gemini API
     try:
+        model = setup_google_api()
+        if not model:
+            # Fall back to basic evaluation if API is not available
+            st.warning("Gemini API is not available. Using basic evaluation instead.")
+            return check_quiz_answer(question_data, user_answer)
+        
         # For multiple choice and true/false, we can still use basic checking
         if question_data["question_type"] in ["multiple_choice", "true_false"]:
             return check_quiz_answer(question_data, user_answer)
@@ -1267,31 +1279,39 @@ def evaluate_quiz_answer_with_gemini(question_data, user_answer):
             Focus on conceptual understanding rather than exact wording. The answer should be considered correct if it demonstrates understanding of the key concepts, even if it doesn't use the exact same words.
             """
             
-            # Get evaluation from Gemini
-            response = model.generate_content(prompt)
-            
-            # Parse the response
+            # Get evaluation from Gemini with timeout handling
             try:
-                json_text = response.text
-                if "```json" in json_text:
-                    json_text = json_text.split("```json")[1].split("```")[0].strip()
-                elif "```" in json_text:
-                    json_text = json_text.split("```")[1].split("```")[0].strip()
+                response = model.generate_content(prompt, timeout=15)  # 15 second timeout
                 
-                evaluation = json.loads(json_text)
-                
-                # Return the evaluation with standard fields
-                return {
-                    "correct": evaluation.get("correct", False),
-                    "explanation": evaluation.get("explanation", ""),
-                    "feedback": evaluation.get("feedback", ""),
-                    "score": evaluation.get("score", 0),
-                    "missing_concepts": evaluation.get("missing_concepts", []),
-                    "ai_evaluated": True
-                }
-            except (json.JSONDecodeError, AttributeError) as e:
-                # Fall back to basic evaluation if parsing fails
-                st.warning(f"Error parsing AI evaluation: {str(e)}. Using basic evaluation instead.")
+                # Parse the response
+                try:
+                    json_text = response.text
+                    if "```json" in json_text:
+                        json_text = json_text.split("```json")[1].split("```")[0].strip()
+                    elif "```" in json_text:
+                        json_text = json_text.split("```")[1].split("```")[0].strip()
+                    
+                    evaluation = json.loads(json_text)
+                    
+                    # Validate required fields
+                    if "correct" not in evaluation or "explanation" not in evaluation:
+                        raise ValueError("Missing required fields in AI evaluation")
+                    
+                    # Return the evaluation with standard fields
+                    return {
+                        "correct": evaluation.get("correct", False),
+                        "explanation": evaluation.get("explanation", ""),
+                        "feedback": evaluation.get("feedback", ""),
+                        "score": evaluation.get("score", 1.0 if evaluation.get("correct", False) else 0.0),
+                        "missing_concepts": evaluation.get("missing_concepts", []),
+                        "ai_evaluated": True
+                    }
+                except (json.JSONDecodeError, AttributeError, ValueError) as e:
+                    # Fall back to basic evaluation if parsing fails
+                    st.warning(f"Error parsing AI evaluation: {str(e)}. Using basic evaluation instead.")
+                    return check_quiz_answer(question_data, user_answer)
+            except Exception as timeout_err:
+                st.warning(f"Timeout or error when calling Gemini API: {str(timeout_err)}. Using basic evaluation instead.")
                 return check_quiz_answer(question_data, user_answer)
         
         # For unrecognized question types
@@ -1299,7 +1319,19 @@ def evaluate_quiz_answer_with_gemini(question_data, user_answer):
     
     except Exception as e:
         st.warning(f"Error using AI for evaluation: {str(e)}. Using basic evaluation instead.")
-        return check_quiz_answer(question_data, user_answer)
+        # Ensure we always return a valid result
+        try:
+            return check_quiz_answer(question_data, user_answer)
+        except Exception:
+            # Last resort error handling
+            return {
+                "correct": False,
+                "explanation": "There was an error evaluating your answer.",
+                "feedback": "Please try again or contact support if the issue persists.",
+                "score": 0,
+                "missing_concepts": [],
+                "ai_evaluated": False
+            }
 
 def check_quiz_answer(question_data, user_answer):
     """Check if the user's answer is correct based on question type."""
@@ -1307,7 +1339,11 @@ def check_quiz_answer(question_data, user_answer):
         if question_data["question_type"] == "multiple_choice":
             return {
                 "correct": user_answer == question_data["correct_answer"],
-                "explanation": question_data["explanation"]
+                "explanation": question_data["explanation"],
+                "feedback": "Your answer was " + ("correct!" if user_answer == question_data["correct_answer"] else "incorrect."),
+                "score": 1.0 if user_answer == question_data["correct_answer"] else 0.0,
+                "missing_concepts": [] if user_answer == question_data["correct_answer"] else ["Key concept"],
+                "ai_evaluated": False
             }
         elif question_data["question_type"] == "true_false":
             # Convert string "true"/"false" to boolean if needed
@@ -1317,24 +1353,57 @@ def check_quiz_answer(question_data, user_answer):
                 user_bool = user_answer
             return {
                 "correct": user_bool == question_data["correct_answer"],
-                "explanation": question_data["explanation"]
+                "explanation": question_data["explanation"],
+                "feedback": "Your answer was " + ("correct!" if user_bool == question_data["correct_answer"] else "incorrect."),
+                "score": 1.0 if user_bool == question_data["correct_answer"] else 0.0,
+                "missing_concepts": [] if user_bool == question_data["correct_answer"] else ["Key concept"],
+                "ai_evaluated": False
             }
         elif question_data["question_type"] == "short_answer":
             # For short answer, check if keywords are present
             user_answer_lower = user_answer.lower()
             keywords_present = [keyword.lower() in user_answer_lower for keyword in question_data["keywords"]]
-            # Consider correct if at least 50% of keywords are present
-            correct = sum(keywords_present) >= len(keywords_present) / 2
+            
+            # Calculate keyword match percentage
+            match_percentage = sum(keywords_present) / len(keywords_present) if keywords_present else 0
+            
+            # Consider correct if at least 70% of keywords are present
+            correct = match_percentage >= 0.7
+            
+            # Identify missing keywords
+            missing_keywords = [
+                question_data["keywords"][i] for i in range(len(keywords_present)) 
+                if not keywords_present[i]
+            ]
+            
             return {
                 "correct": correct,
                 "explanation": question_data["explanation"],
-                "keywords_matched": sum(keywords_present),
-                "total_keywords": len(keywords_present)
+                "feedback": f"You matched {int(match_percentage * 100)}% of the key concepts." +
+                           (f" Missing: {', '.join(missing_keywords)}" if missing_keywords else ""),
+                "score": match_percentage,
+                "missing_concepts": missing_keywords,
+                "ai_evaluated": False
             }
         else:
-            return {"correct": False, "explanation": "Unknown question type"}
+            return {
+                "correct": False, 
+                "explanation": "Unknown question type",
+                "feedback": "This question type cannot be evaluated.",
+                "score": 0,
+                "missing_concepts": [],
+                "ai_evaluated": False
+            }
     except Exception as e:
-        return {"correct": False, "explanation": f"Error checking answer: {str(e)}"}
+        return {
+            "correct": False, 
+            "explanation": f"Error checking answer: {str(e)}",
+            "feedback": "There was an error evaluating your answer.",
+            "score": 0,
+            "missing_concepts": [],
+            "ai_evaluated": False
+        }
+
 # Load question papers from directory
 def load_question_papers_from_directory():
     """Load all question papers from the Question Papers directory."""
@@ -1842,10 +1911,16 @@ def main():
             st.session_state.mind_palace = ""
         if "quiz_data" not in st.session_state:
             st.session_state.quiz_data = []
+        if "current_quiz_question" not in st.session_state:
+            st.session_state.current_quiz_question = 0
         if "quiz_answers" not in st.session_state:
-            st.session_state.quiz_answers = {}
+            st.session_state.quiz_answers = []
         if "quiz_score" not in st.session_state:
             st.session_state.quiz_score = 0
+        if "quiz_completed" not in st.session_state:
+            st.session_state.quiz_completed = False
+        if "use_ai_evaluation" not in st.session_state:
+            st.session_state.use_ai_evaluation = True
         if "journal_entries" not in st.session_state:
             st.session_state.journal_entries = []
     
@@ -2734,6 +2809,12 @@ def main():
                                 st.session_state.quiz_answers = []
                                 st.session_state.quiz_score = 0
                                 st.session_state.quiz_completed = False
+                                
+                                # Reset all submission flags for questions
+                                for key in list(st.session_state.keys()):
+                                    if key.startswith("submitted_q"):
+                                        del st.session_state[key]
+                                
                                 st.rerun()
                 
                 # Advanced quiz options
@@ -2822,57 +2903,55 @@ def main():
                                     # Use basic evaluation
                                     result = check_quiz_answer(question_data, user_answer)
                                 
+                                # Ensure quiz_answers is initialized and has enough elements
+                                while len(st.session_state.quiz_answers) <= current_q:
+                                    st.session_state.quiz_answers.append(None)
+                                
                                 # Store answer and result
-                                if len(st.session_state.quiz_answers) <= current_q:
-                                    st.session_state.quiz_answers.append({
-                                        "question": question_data["question"],
-                                        "user_answer": user_answer,
-                                        "correct": result["correct"],
-                                        "explanation": result["explanation"],
-                                        # Add AI evaluation data if available
-                                        "ai_evaluated": result.get("ai_evaluated", False),
-                                        "feedback": result.get("feedback", ""),
-                                        "score": result.get("score", 1.0 if result["correct"] else 0.0),
-                                        "missing_concepts": result.get("missing_concepts", [])
-                                    })
-                                else:
-                                    st.session_state.quiz_answers[current_q] = {
-                                        "question": question_data["question"],
-                                        "user_answer": user_answer,
-                                        "correct": result["correct"],
-                                        "explanation": result["explanation"],
-                                        # Add AI evaluation data if available
-                                        "ai_evaluated": result.get("ai_evaluated", False),
-                                        "feedback": result.get("feedback", ""),
-                                        "score": result.get("score", 1.0 if result["correct"] else 0.0),
-                                        "missing_concepts": result.get("missing_concepts", [])
-                                    }
+                                st.session_state.quiz_answers[current_q] = {
+                                    "question": question_data["question"],
+                                    "user_answer": user_answer,
+                                    "correct": result["correct"],
+                                    "explanation": result["explanation"],
+                                    # Add AI evaluation data if available
+                                    "ai_evaluated": result.get("ai_evaluated", False),
+                                    "feedback": result.get("feedback", ""),
+                                    "score": result.get("score", 1.0 if result["correct"] else 0.0),
+                                    "missing_concepts": result.get("missing_concepts", [])
+                                }
                                 
                                 # Mark question as answered
                                 st.session_state[f"submitted_q{current_q}"] = True
                                 st.rerun()
-                                
+                
                         # Show result if question has been answered
                         if question_answered:
-                            result = st.session_state.quiz_answers[current_q]
-                            if result["correct"]:
-                                st.success("Correct! " + result["explanation"])
-                            else:
-                                st.error("Incorrect. " + result["explanation"])
+                            # Make sure the index exists in the quiz_answers list
+                            if current_q < len(st.session_state.quiz_answers):
+                                result = st.session_state.quiz_answers[current_q]
+                                if result["correct"]:
+                                    st.success("Correct! " + result["explanation"])
+                                else:
+                                    st.error("Incorrect. " + result["explanation"])
                             
-                            # Display additional feedback if AI evaluated
-                            if "ai_evaluated" in result and result["ai_evaluated"]:
-                                if "feedback" in result and result["feedback"]:
-                                    st.info(f"**Feedback:** {result['feedback']}")
-                                
-                                if "score" in result and "missing_concepts" in result:
-                                    score_percent = int(result["score"] * 100)
-                                    st.write(f"**Score:** {score_percent}%")
+                                # Display additional feedback if AI evaluated
+                                if "ai_evaluated" in result and result["ai_evaluated"]:
+                                    if "feedback" in result and result["feedback"]:
+                                        st.info(f"**Feedback:** {result['feedback']}")
                                     
-                                    if result["missing_concepts"]:
-                                        st.write("**Concepts to review:**")
-                                        for concept in result["missing_concepts"]:
-                                            st.write(f"- {concept}")
+                                    if "score" in result and "missing_concepts" in result:
+                                        score_percent = int(result["score"] * 100)
+                                        st.write(f"**Score:** {score_percent}%")
+                                        
+                                        if result["missing_concepts"]:
+                                            st.write("**Concepts to review:**")
+                                            for concept in result["missing_concepts"]:
+                                                st.write(f"- {concept}")
+                            else:
+                                # If the answer was marked as submitted but doesn't exist in the answers list
+                                st.warning("Answer data not found. Please try submitting again.")
+                                # Reset the submission flag to allow resubmission
+                                st.session_state[f"submitted_q{current_q}"] = False
                         
                         # Navigation buttons
                         nav_col1, nav_col2 = st.columns([1, 1])
