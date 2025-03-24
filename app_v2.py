@@ -32,7 +32,7 @@ def setup_google_api():
         st.error("Google API key not found. Please set it as an environment variable.")
         return None
     configure(api_key=GEMINI_API_KEY)
-    return GenerativeModel("gemini-2.0-pro-exp-02-05")
+    return GenerativeModel("gemini-2.0-flash-exp-image-generation")
 # Extract text from PDF
 def extract_text_from_pdf(pdf_file):
     """
