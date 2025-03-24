@@ -1124,7 +1124,7 @@ def generate_mind_palace(summary):
         Study Material:
         {truncated_summary}
         
-        Only return the JSON structure, nothing else.
+        Only return the JSON structure, and a mind palace image if it can be generated.
         """
         
         response = model.generate_content(prompt)
