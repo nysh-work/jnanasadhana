@@ -32,8 +32,56 @@ def setup_google_api():
         st.error("Google API key not found. Please set it as an environment variable.")
         return None
     configure(api_key=GEMINI_API_KEY)
-    return GenerativeModel("gemini-2.5-pro-exp-03-25")
+    return GenerativeModel("gemini-2.5-pro-preview-03-25")
 # Extract text from PDF
+def check_pdf_encryption(reader):
+    """Check if PDF is encrypted and handle encryption-related errors.
+    
+    Args:
+        reader: PyPDF2 PdfReader object
+        
+    Returns:
+        str: Error message if encrypted, None if not encrypted
+    """
+    if reader.is_encrypted:
+        return "The PDF file is encrypted and cannot be processed. Please upload an unencrypted PDF."
+    
+    # Check first page for potential encryption issues
+    try:
+        if len(reader.pages) > 0:
+            first_page_text = reader.pages[0].extract_text()
+            if first_page_text is None:
+                return "The PDF file appears to be encrypted or has restricted permissions. Please upload an unencrypted PDF."
+    except Exception as e:
+        if any(keyword in str(e).lower() for keyword in ["decrypt", "password", "encrypt"]):
+            return "The PDF file is encrypted and cannot be processed. Please upload an unencrypted PDF."
+    return None
+
+def extract_page_text(page):
+    """Extract text from a single PDF page with error handling.
+    
+    Args:
+        page: PyPDF2 page object
+        
+    Returns:
+        str: Extracted text or empty string if extraction fails
+    """
+    try:
+        return page.extract_text() or ""
+    except Exception:
+        return ""
+
+def show_extraction_progress(current, total):
+    """Display progress bar and status text for PDF extraction.
+    
+    Args:
+        current: Current page number
+        total: Total number of pages
+    """
+    progress = current / total
+    st.session_state.pdf_progress_bar.progress(progress)
+    st.session_state.pdf_status_text.text(f"Extracting page {current}/{total}")
+
 def extract_text_from_pdf(pdf_file):
     """
     Extract text from a PDF file with improved error handling and fallback methods.
@@ -45,76 +93,41 @@ def extract_text_from_pdf(pdf_file):
         str: Extracted text from the PDF or error message
     """
     try:
-        # Create a BytesIO object to handle the file buffer
-        pdf_bytes = io.BytesIO(pdf_file.getvalue())
+        # Initialize progress indicators in session state
+        if "pdf_progress_bar" not in st.session_state:
+            st.session_state.pdf_progress_bar = st.progress(0)
+            st.session_state.pdf_status_text = st.empty()
         
-        # First attempt: Use PyPDF2
-        try:
-            reader = PyPDF2.PdfReader(pdf_bytes)
-            
-            # Check if PDF is encrypted
-            if reader.is_encrypted:
-                return "The PDF file is encrypted and cannot be processed. Please upload an unencrypted PDF."
-            
-            # Try to extract text from first page to catch encryption/permissions issues
-            try:
-                if len(reader.pages) > 0:
-                    first_page = reader.pages[0]
-                    first_page_text = first_page.extract_text()
-                    if first_page_text is None:
-                        # Some encrypted PDFs don't set is_encrypted but still fail on extraction
-                        return "The PDF file appears to be encrypted or has restricted permissions. Please upload an unencrypted PDF."
-            except Exception as page_e:
-                if "decrypt" in str(page_e).lower() or "password" in str(page_e).lower() or "encrypt" in str(page_e).lower():
-                    return "The PDF file is encrypted and cannot be processed. Please upload an unencrypted PDF."
-            
-            # Add progress bar for large documents
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            text_parts = []
-            total_pages = len(reader.pages)
-            
-            for i, page in enumerate(reader.pages):
-                try:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text_parts.append(page_text)
-                except Exception as e:
-                    st.warning(f"Warning: Could not extract text from page {i+1}: {str(e)}")
-                    continue
-                
-                # Update progress
-                progress = (i + 1) / total_pages
-                progress_bar.progress(progress)
-                status_text.text(f"Extracting page {i+1}/{total_pages}")
-            
-            # Clear progress indicators
-            progress_bar.empty()
-            status_text.empty()
-            
-            # Clean up the text
-            text = "\n\n".join(text_parts)
-            text = text.strip()
-            
-            # Check if text extraction was successful
-            if not text:
-                st.error(f"No text could be extracted from {pdf_file.name}. The PDF might be scanned or contain only images.")
-                return ""
-            
-            return text
-        except Exception as e:
-            st.error(f"Error reading PDF: {str(e)}")
+        pdf_bytes = io.BytesIO(pdf_file.getvalue())
+        reader = PyPDF2.PdfReader(pdf_bytes)
+        
+        # Check for encryption
+        encryption_error = check_pdf_encryption(reader)
+        if encryption_error:
+            return encryption_error
+        
+        # Extract text from each page
+        text_parts = []
+        for i, page in enumerate(reader.pages, 1):
+            page_text = extract_page_text(page)
+            if page_text:
+                text_parts.append(page_text)
+            show_extraction_progress(i, len(reader.pages))
+        
+        # Clean up progress indicators
+        st.session_state.pdf_progress_bar.empty()
+        st.session_state.pdf_status_text.empty()
+        
+        # Combine and clean extracted text
+        text = "\n\n".join(text_parts).strip()
+        if not text:
+            st.error(f"No text could be extracted from {pdf_file.name}. The PDF might be scanned or contain only images.")
             return ""
+        
+        return text
     except Exception as e:
-        st.error(f"Error processing file {pdf_file.name}: {str(e)}")
+        st.error(f"Error processing PDF: {str(e)}")
         return ""
-    finally:
-        # Clean up the temporary file
-        try:
-            os.unlink(temp_file_path)
-        except:
-            pass
 
 def extract_text_from_pdf_robust(pdf_file):
     """
@@ -130,53 +143,59 @@ def extract_text_from_pdf_robust(pdf_file):
     # Store original file position
     original_position = pdf_file.tell()
     
-    # Create progress indicators
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    # Initialize progress indicators in session state
+    if "pdf_progress_bar" not in st.session_state:
+        st.session_state.pdf_progress_bar = st.progress(0)
+        st.session_state.pdf_status_text = st.empty()
     
     # Method 1: Direct BytesIO approach
+    method1_result = try_bytesio_method(pdf_file)
+    if method1_result and len(method1_result.strip()) > 100:
+        return method1_result
+    
+    # Method 2: Temporary file approach
+    method2_result = try_tempfile_method(pdf_file)
+    if method2_result and len(method2_result.strip()) > 100:
+        return method2_result
+    
+    # If both methods failed, try the original method
+    pdf_file.seek(original_position)
+    result = extract_text_from_pdf(pdf_file)
+    
+    if result and len(result.strip()) > 100:
+        return result
+    else:
+        return "Could not extract sufficient text from this PDF. It may be encrypted, scanned, or contain only images."
+
+def try_bytesio_method(pdf_file):
+    """Try extracting text using BytesIO method."""
     try:
-        status_text.text("Extracting text (Method 1)...")
+        st.session_state.pdf_status_text.text("Extracting text (Method 1)...")
         pdf_file.seek(0)
         pdf_bytes = io.BytesIO(pdf_file.read())
         
         reader = PyPDF2.PdfReader(pdf_bytes)
-        if reader.is_encrypted:
-            progress_bar.empty()
-            status_text.empty()
-            return "The PDF file is encrypted and cannot be processed. Please upload an unencrypted PDF."
+        encryption_error = check_pdf_encryption(reader)
+        if encryption_error:
+            return encryption_error
         
         text_parts = []
-        total_pages = len(reader.pages)
+        for i, page in enumerate(reader.pages, 1):
+            page_text = extract_page_text(page)
+            if page_text and page_text.strip():
+                text_parts.append(page_text)
+            show_extraction_progress(i, len(reader.pages))
         
-        for i, page in enumerate(reader.pages):
-            try:
-                page_text = page.extract_text()
-                if page_text and page_text.strip():
-                    text_parts.append(page_text)
-            except Exception:
-                # Skip pages that can't be processed
-                continue
-            
-            # Update progress
-            progress = (i + 1) / (total_pages * 2)  # Split progress between methods
-            progress_bar.progress(progress)
-            status_text.text(f"Method 1: Page {i+1}/{total_pages}")
-        
-        combined_text_1 = "\n\n".join(text_parts)
-        if combined_text_1 and len(combined_text_1.strip()) > 100:
-            # First method worked well enough
-            progress_bar.empty()
-            status_text.empty()
-            return combined_text_1
-    
+        return "\n\n".join(text_parts).strip()
     except Exception as e:
-        # Log the error but continue to try other methods
-        print(f"Method 1 failed: {str(e)}")
-    
-    # Method 2: Temporary file approach
+        print(f"BytesIO method failed: {str(e)}")
+        return None
+
+def try_tempfile_method(pdf_file):
+    """Try extracting text using temporary file method."""
+    temp_file_path = None
     try:
-        status_text.text("Extracting text (Method 2)...")
+        st.session_state.pdf_status_text.text("Extracting text (Method 2)...")
         pdf_file.seek(0)
         
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
@@ -186,59 +205,26 @@ def extract_text_from_pdf_robust(pdf_file):
         text_parts = []
         with open(temp_file_path, 'rb') as f:
             reader = PyPDF2.PdfReader(f)
-            if reader.is_encrypted:
-                os.unlink(temp_file_path)
-                progress_bar.empty()
-                status_text.empty()
-                return "The PDF file is encrypted and cannot be processed. Please upload an unencrypted PDF."
+            encryption_error = check_pdf_encryption(reader)
+            if encryption_error:
+                return encryption_error
             
-            total_pages = len(reader.pages)
-            for i, page in enumerate(reader.pages):
-                try:
-                    page_text = page.extract_text()
-                    if page_text and page_text.strip():
-                        text_parts.append(page_text)
-                except Exception:
-                    # Skip pages that can't be processed
-                    continue
-                
-                # Update progress
-                progress = 0.5 + (i + 1) / (total_pages * 2)  # Second half of progress
-                progress_bar.progress(progress)
-                status_text.text(f"Method 2: Page {i+1}/{total_pages}")
+            for i, page in enumerate(reader.pages, 1):
+                page_text = extract_page_text(page)
+                if page_text and page_text.strip():
+                    text_parts.append(page_text)
+                show_extraction_progress(i, len(reader.pages))
         
-        # Clean up
-        os.unlink(temp_file_path)
-        
-        combined_text_2 = "\n\n".join(text_parts)
-        if combined_text_2 and len(combined_text_2.strip()) > 100:
-            # Second method worked well enough
-            progress_bar.empty()
-            status_text.empty()
-            return combined_text_2
-    
+        return "\n\n".join(text_parts).strip()
     except Exception as e:
-        # Log the error but continue
-        print(f"Method 2 failed: {str(e)}")
-        try:
-            os.unlink(temp_file_path)
-        except:
-            pass
-    
-    # If we got here, both methods failed or produced insufficient text
-    progress_bar.empty()
-    status_text.empty()
-    
-    # Restore original file position
-    pdf_file.seek(original_position)
-    
-    # Try the original method as a last resort
-    result = extract_text_from_pdf(pdf_file)
-    
-    if result and len(result.strip()) > 100:
-        return result
-    else:
-        return "Could not extract sufficient text from this PDF. It may be encrypted, scanned, or contain only images."
+        print(f"Tempfile method failed: {str(e)}")
+        return None
+    finally:
+        if temp_file_path:
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass
 
 def extract_text_from_pdf_with_crypto(pdf_file, password=None):
     """
